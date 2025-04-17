@@ -1,6 +1,2 @@
 resources:
-  - ../../base
-  - ingress.yaml
-
-patchesStrategicMerge:
-  - patch-deployment.yaml
+  - Cronjob.yaml
