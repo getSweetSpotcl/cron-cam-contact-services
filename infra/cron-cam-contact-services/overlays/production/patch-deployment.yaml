@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cron-cam-contact-services
+spec:
+  replicas: 1
+  template:
+    spec:
+      imagePullSecrets:
+        - name: ghcr-login-secret
+      containers:
+        - name: cron-cam-contact-services
+          image: ghcr.io/getsweetspotcl/cron-cam-contact-services:latest
+          ports:
+            - containerPort: 8080
+          # env:
+          # - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: sec-cron-cam-contact-services
+          #       key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+          # - name: CLERK_SECRET_KEY
+          #   valueFrom:
+          #     secretKeyRef:
+          #       name: sec-cron-cam-contact-services
+          #       key: CLERK_SECRET_KEY
