@@ -1,34 +1,28 @@
-# Etapa de compilación
-FROM golang:1.23-alpine AS builder
+# Build stage
+FROM golang:1.22-alpine AS builder
 
-# Establecer directorio de trabajo
+# Set working directory
 WORKDIR /app
 
-# Copiar archivos de dependencias
+# Copy go mod files
 COPY go.mod go.sum ./
 
-# Descargar dependencias
+# Download dependencies
 RUN go mod download
 
-# Copiar el código fuente
+# Copy source code
 COPY . .
 
-# Compilar la aplicación
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 
-# Etapa de ejecución
+# Final stage
 FROM alpine:latest
 
-# Instalar certificados para HTTPS
-RUN apk --no-cache add ca-certificates
+WORKDIR /app
 
-WORKDIR /root/
-
-# Copiar el binario compilado desde la etapa de compilación
+# Copy the binary from builder
 COPY --from=builder /app/main .
 
-# Exponer el puerto que usa la aplicación
-EXPOSE 8080
-
-# Comando para ejecutar la aplicación
+# Run the binary
 CMD ["./main"]

@@ -53,7 +53,7 @@ jobs:
         run: |
           cd infra-apps/apps/${{ github.event.repository.name }}/overlays/production
           # Actualizar la imagen en el archivo de manifiesto
-          sed -i 's|ghcr.io/getsweetspotcl/${{ github.event.repository.name }}:.*|ghcr.io/getsweetspotcl/${{ github.event.repository.name }}:${{ steps.tag.outputs.TAG_NAME }}|g' patch-deployment.yaml
+          sed -i 's|ghcr.io/getsweetspotcl/${{ github.event.repository.name }}:.*|ghcr.io/getsweetspotcl/${{ github.event.repository.name }}:${{ steps.tag.outputs.TAG_NAME }}|g' Cronjob.yaml
 
           # Configurar Git
           git config --local user.email "action@github.com"
