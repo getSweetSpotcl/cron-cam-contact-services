@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -132,6 +133,7 @@ type CompanyPhone struct {
 	PhoneID            string `json:"phone_id"`
 	CompanyPhoneNumber string `json:"company_phone_number"`
 	CompanyID          string `json:"company_id"`
+	Wa_Bussiness_ID    string `json:"wa_business_id"`
 }
 
 // --- Funciones auxiliares ---
@@ -210,6 +212,7 @@ func sendWhatsAppTemplate(params SendTemplateParams) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	fmt.Println("Mensaje enviado, resp:", resp)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := ioutil.ReadAll(resp.Body)
 		return "", fmt.Errorf("error %d: %s", resp.StatusCode, string(b))
@@ -309,11 +312,13 @@ func updateConversation(db *sql.DB, idConversation int, sender string) error {
 func getApikeyAndPhoneId(db *sql.DB, companyPhoneId string) (CompanyPhone, error) {
 	var cp CompanyPhone
 	err := db.QueryRow(
-		`SELECT token, phone_id, phone_number, company_id
-		 FROM companyphones WHERE wa_business_id=$1`, companyPhoneId,
-	).Scan(&cp.Token, &cp.PhoneID, &cp.CompanyPhoneNumber, &cp.CompanyID)
+		`SELECT token, phone_id, phone_number, company_id, wa_business_id
+		 FROM companyphones WHERE phone_id=$1`, companyPhoneId,
+	).Scan(&cp.Token, &cp.PhoneID, &cp.CompanyPhoneNumber, &cp.CompanyID, &cp.Wa_Bussiness_ID)
+	log.Println("wa_business_id: ", cp.Wa_Bussiness_ID)
+
 	if err == sql.ErrNoRows {
-		return CompanyPhone{}, nil
+		return CompanyPhone{}, err
 	}
 	return cp, err
 }
@@ -350,40 +355,92 @@ func convertMetadataToParameters(raw json.RawMessage, maxParams int) ([]Paramete
 	return params, nil
 }
 
-func GetTemplateInfo(templateName, apiKey, companyPhoneID string) (TemplateInfo, error) {
+func countPlaceholders(text string) int {
+	// Soporta {{1}}, {{2}}, etc.
+	re := regexp.MustCompile(`\{\{\d+\}\}`)
+	return len(re.FindAllString(text, -1))
+}
+
+func GetTemplateInfo(businessAccountID, apiKey, templateName string) (TemplateInfo, error) {
+	fmt.Println("businessAccountID:", businessAccountID)
 	url := fmt.Sprintf(
-		"https://graph.facebook.com/v17.0/%s/message_templates?name=%s",
-		companyPhoneID, templateName,
+		"https://graph.facebook.com/v22.0/%s/message_templates?name=%s&fields=name,language,components{type,text,example}",
+		businessAccountID, templateName,
 	)
-	req, _ := http.NewRequest("GET", url, nil)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return TemplateInfo{}, fmt.Errorf("error creando request: %w", err)
+	}
 	req.Header.Add("Authorization", "Bearer "+apiKey)
 	req.Header.Add("Content-Type", "application/json")
+
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return TemplateInfo{}, err
+		return TemplateInfo{}, fmt.Errorf("error en request: %w", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		return TemplateInfo{}, fmt.Errorf("status %d", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		return TemplateInfo{}, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
-	var tr TemplateResponseData
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return TemplateInfo{}, err
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return TemplateInfo{}, fmt.Errorf("error leyendo cuerpo: %w", err)
 	}
-	if len(tr.Data) == 0 {
-		return TemplateInfo{}, fmt.Errorf("no templates found")
+	fmt.Println("Cuerpo crudo:", string(bodyBytes))
+
+	var result struct {
+		Data []struct {
+			Name       string `json:"name"`
+			Language   string `json:"language"`
+			Components []struct {
+				Type    string `json:"type"`
+				Text    string `json:"text"`
+				Example struct {
+					BodyText [][]string `json:"body_text"`
+				} `json:"example,omitempty"`
+			} `json:"components"`
+		} `json:"data"`
 	}
-	data := tr.Data[0]
-	ti := TemplateInfo{Language: data.Language}
-	if len(data.Components) > 0 {
-		ti.TemplateText = data.Components[0].Text
-		if data.Components[0].Example != nil &&
-			len(data.Components[0].Example.BodyText) > 0 {
-			ti.ParamCount = len(data.Components[0].Example.BodyText[0])
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return TemplateInfo{}, fmt.Errorf("error parseando JSON: %w", err)
+	}
+
+	if len(result.Data) == 0 {
+		return TemplateInfo{}, fmt.Errorf("template %q no encontrado", templateName)
+	}
+
+	tpl := result.Data[0]
+
+	// Buscar componente tipo BODY
+	var bodyComponentText string
+	var paramCount int
+	for _, comp := range tpl.Components {
+		if comp.Type == "BODY" {
+			bodyComponentText = comp.Text
+			// Preferimos los ejemplos si existen
+			if len(comp.Example.BodyText) > 0 {
+				paramCount = len(comp.Example.BodyText[0])
+			} else {
+				paramCount = countPlaceholders(bodyComponentText)
+			}
+			break
 		}
 	}
-	return ti, nil
+	if bodyComponentText == "" {
+		return TemplateInfo{}, fmt.Errorf("template %q no tiene componente BODY", templateName)
+	}
+
+	info := TemplateInfo{
+		Language:     tpl.Language,
+		TemplateText: bodyComponentText,
+		ParamCount:   paramCount,
+	}
+	return info, nil
 }
 
 func fromTemplateTextToRealText(templateText string, parameters []Parameter) string {
@@ -421,14 +478,17 @@ func handler() error {
 	if err != nil {
 		return err
 	}
+	log.Println("Obteniendo apikeys")
+
 	company, err := getApikeyAndPhoneId(db, camp.CompanyPhoneID)
 	if err != nil {
 		return err
 	}
+	log.Println("Información de la compañia obtenida: ", company)
 
 	log.Println("ACA muere")
 
-	tmpl, err := GetTemplateInfo(camp.Template, company.Token, camp.CompanyPhoneID)
+	tmpl, err := GetTemplateInfo(company.Wa_Bussiness_ID, company.Token, camp.Template)
 	if err != nil {
 		return err
 	}
@@ -437,7 +497,7 @@ func handler() error {
 		if p.CampaignID != camp.CampaignID {
 			camp, _ = getCampaignInfo(db, p.CampaignID)
 			company, _ = getApikeyAndPhoneId(db, camp.CompanyPhoneID)
-			tmpl, _ = GetTemplateInfo(camp.Template, company.Token, camp.CompanyPhoneID)
+			tmpl, _ = GetTemplateInfo(company.Wa_Bussiness_ID, company.Token, camp.Template)
 		}
 
 		var convID int
